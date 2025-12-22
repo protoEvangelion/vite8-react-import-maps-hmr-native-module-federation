@@ -1,6 +1,9 @@
 # Vite Native Module Federation
 
+
 A proof of concept demonstrating native module federation using Vite 8 (rolldown-vite), Import Maps, and a custom externals plugin.
+
+![App Screenshot](./app.png)
 
 ## Overview
 

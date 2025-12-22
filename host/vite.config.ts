@@ -10,7 +10,7 @@ export default defineConfig({
     x({
       externals: [
         'react', // Externalize "react", and all of its subexports (react/*), such as react/jsx-runtime
-        'react-dom', // Externalize "react", and all of its subexports (react/*), such as react/jsx-runtime
+        'react-dom',
         'remote/App',
       ],
     }),

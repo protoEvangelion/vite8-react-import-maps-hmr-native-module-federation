@@ -6,6 +6,7 @@
     "remote"
   ],
   "scripts": {
+    "dev": "bun run dev:host & bun run dev:remote",
     "dev:host": "bun --cwd host dev",
     "dev:remote": "bun --cwd remote dev",
     "build:host": "bun --cwd host build",
