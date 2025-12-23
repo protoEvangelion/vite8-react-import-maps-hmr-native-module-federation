@@ -1,6 +1,6 @@
 # Vite Native Module Federation
 
-A proof of concept demonstrating native module federation using Vite 8 (rolldown-vite), Import Maps, and a custom externals plugin.
+A proof of concept demonstrating native module federation using Vite 8 (rolldown-vite), Import Maps, and a small vite plugin.
 
 ![App Screenshot](./app.png)
 
@@ -11,164 +11,82 @@ bun i
 bun dev
 ```
 
-## Overview
+## Problem
 
-This project shows how to achieve module federation in Vite without traditional module federation plugins, instead leveraging browser-native features:
+> How do you share node_modules & src code from different sources at runtime?
 
-- **Import Maps** for dependency resolution and module aliasing
-- **ES Modules** loaded directly from CDN (esm.sh)
-- **Custom Externals Plugin** to prevent bundling externalized dependencies
-- **Hot Module Replacement (HMR)** working with external React
+## Solution
 
-## Architecture
+- Module Federation 2.0 solves this.
+  - However it adds great complexity via it's runtime + the build tool plugins required to make this feasible
+  - In addition to complexity, the build tool plugins have often gone stale, blocking users from upgrading to the say the latest version of vite.
 
-The workspace contains two vite React applications in a Bun monorepo:
+## Goal
 
-- **host**: The main application that consumes remote modules
-- **remote**: A remote application exposing components to the host
+> Solve this using browser native tools where possible & striving for simplicity in build tool integration where necessary.
 
-### Key Components
+## My Solution
 
-#### Import Maps (`host/index.html`)
+- Use regular import syntax to share deps.
+  - `import React from 'react'`
+  - `import('remote/Component.tsx')`
 
-```html
-<script type="importmap">
-{
-  "imports": {
-    "react": "https://esm.sh/react@18.3.1/?dev",
-    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client/?dev",
-    "react/jsx-runtime": "https://esm.sh/react@18.3.1/jsx-runtime/?dev",
-    "react/jsx-dev-runtime": "https://esm.sh/react@18.3.1/jsx-dev-runtime/?dev",
-    "remote/App": "http://localhost:4174/App.js"
-  }
-}
-</script>
+- This involves a hybrid approach using import maps + a small vite plugin to proxy shared node modules like react to shell.
+
+## The Challenges
+
+- Initially I tried to use import maps FULLY to resolve this issue.
+  - The problem with import maps, is that it required using the esm.sh cdn for node_modules (not an option at the company I work at)
+    - This worked 90% but ran into issues with a package that was deployed to our private CDN that imported react into a sha based import which is subject to change: `import react from 'react-D1324.js'`
+
+- So I settled for import maps just to resolve remote imports & with a small vite plugin to handle the node_module resolution.
+
+## Technical Steps Required
+
+1. Inside the host (shell) app index.html, I added an import map to handle remote imports:
+
+```
+    <script type="importmap">
+      {
+        "imports": {
+          "remote/App": "http://localhost:3001/src/App.tsx"
+        }
+      }
+    </script>
 ```
 
-The import map:
-- Externalizes React dependencies to load from esm.sh CDN
-- Uses `?dev` parameter to enable React DevTools integration (required for HMR)
-- Maps `remote/App` to the remote application's build output
+2. To import it you simply need to import it dynamically & tell vite to not resolve it:
 
-#### Externals Plugin (`externals-plugin.ts`)
-
-A custom Vite plugin that prevents bundling of external dependencies during both development and production builds:
-
-- **Development**: Hooks into esbuild's dependency optimization to mark externals
-- **Build**: Configures Rolldown to exclude externals from the bundle
-- **Transform**: Handles Vite's module prefixing for external imports
-
-## How It Works
-
-### Development Mode
-
-1. The host application runs on `http://localhost:5173`
-2. React is loaded from esm.sh via import maps
-3. The externals plugin prevents Vite from bundling React
-4. Remote modules can be loaded dynamically from other dev servers
-5. HMR works because React DevTools hook is enabled via `?dev` parameter & remote vite config specifies correct host url for react-refresh 
-
-### Production Build
-
-1. React and other externals are excluded from the bundle
-2. The build output contains only application code
-3. Runtime dependencies are resolved via import maps
-4. The bundle is significantly smaller since shared dependencies aren't duplicated
-
-## Setup
-
-Install dependencies using Bun:
-
-```bash
-bun install
+```typescript
+const remotePath = 'remote/App'
+const RemoteApp = lazy(() => import(/* @vite-ignore */ remotePath))
 ```
 
-## Usage
+3. For node_modules this is where the vite plugin comes in. To proxy node module imports, inside host & remote vite config do:
 
-### Development
+```typescript
+    remoteProxyPlugin({
+      host: true,
+      remoteUrl: 'http://localhost:3000/node_modules/.vite/deps',
+      modules: [
+        // Case A: React (Needs the 'cjs_interop' shim, which is the default for strings)
+        'react',
+        'react-dom/client',
 
-Run individual applications:
-
-```bash
-bun dev:host     # Runs host on http://localhost:5173
-bun dev:remote   # Runs remote on http://localhost:5174
+        // Case B: A package with ONLY named exports (no default)
+        // You MUST specify type: 'named' here
+        // { name: '@tanstack/react-router', type: 'named' },
+      ],
+    }),
 ```
 
-### Build
+Ensure the `host` option is set correctly. `true` in host vite config, and `false` in remote vite configs. This is critical because in host vite config we will include the deps you pass in optimize deps incase they are not auto discovered during vite's optimization phase. And for remotes we exclude from optimizeDeps so vite does not adjust the import statements that this plugin transforms.
 
-Build applications:
 
-```bash
-bun build:host
-bun build:remote
+### HMR
+
+As a bonus, to get HMR working, in your remote vite configs react plugin, simply add the host address:
+
+```typescript
+    react({ reactRefreshHost: 'http://localhost:3000' }),
 ```
-
-### Preview
-
-Preview production builds:
-
-```bash
-bun preview:host
-bun preview:remote
-```
-
-## Key Features
-
-### ✅ Native ES Modules
-No custom runtime or complex webpack configuration - uses standard browser ES modules.
-
-### ✅ Shared Dependencies
-React and React-DOM are loaded once from CDN and shared across all micro-frontends.
-
-### ✅ Hot Module Replacement
-HMR works with externalized React by using development builds from esm.sh.
-
-### ✅ Type Safety
-Full TypeScript support across all workspaces.
-
-### ✅ Small Bundles
-Application bundles only contain app code, not shared dependencies.
-
-## Technical Details
-
-### Why `?dev` Parameter?
-
-The `?dev` parameter in esm.sh URLs forces development builds of React. This is crucial because:
-
-- Production React builds strip DevTools integration
-- React Refresh (HMR) requires the reconciler to register with `__REACT_DEVTOOLS_GLOBAL_HOOK__`
-- Without this registration, HMR infrastructure works but visual updates fail silently
-
-### Externals Plugin Strategy
-
-The plugin operates at multiple stages:
-
-1. **esbuild plugin** (dependency optimization): Marks imports as external during Vite's dep scanning
-2. **Vite resolve hook**: Returns external flag for matching imports
-3. **Vite transform hook**: Removes Vite's `/@id/` prefix from externalized imports
-
-This ensures dependencies are never bundled and import specifiers remain untouched for import map resolution.
-
-## Dependencies
-
-- **Vite**: `npm:rolldown-vite@7.2.5` (experimental Vite 8 with Rolldown bundler)
-- **React**: 19.2.0 (loaded externally via esm.sh)
-- **Bun**: For workspace management and scripts
-
-## Limitations
-
-- Requires browsers with ES Module and Import Maps support (modern browsers)
-- CDN-hosted dependencies require network access
-- Development builds are larger than production builds due to `?dev` parameter
-
-## Future Enhancements
-
-- Add support for dynamic remote registration
-- Implement federated types sharing
-- Add fallback strategies for CDN failures
-- Support for CSS module federation
-- Integration with Vite's native module federation plugin (when available)
-
-## License
-
-MIT

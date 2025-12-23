@@ -1,10 +1,13 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import x from '../externals-plugin'
 import { resolve } from 'node:path'
+import remoteProxyPlugin from '../vite-plugin-remote-proxy'
 
 // https://vite.dev/config/
 export default defineConfig({
+  server: {
+    port: 3001,
+  },
   build: {
     minify: false,
     lib: {
@@ -18,11 +21,18 @@ export default defineConfig({
     },
   },
   plugins: [
-    react({ reactRefreshHost: 'http://localhost:5173' }),
-    x({
-      externals: [
-        'react', // Externalize "react", and all of its subexports (react/*), such as react/jsx-runtime
-        'react-dom', // Externalize "react", and all of its subexports (react/*), such as react/jsx-runtime
+    react({ reactRefreshHost: 'http://localhost:3000' }),
+    remoteProxyPlugin({
+      host: false,
+      remoteUrl: 'http://localhost:3000/node_modules/.vite/deps',
+      modules: [
+        // Case A: React (Needs the 'cjs_interop' shim, which is the default for strings)
+        'react',
+        'react-dom/client',
+
+        // Case B: A package with ONLY named exports (no default)
+        // You MUST specify type: 'named' here
+        // { name: '@tanstack/react-router', type: 'named' },
       ],
     }),
   ],

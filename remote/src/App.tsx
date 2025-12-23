@@ -1,8 +1,17 @@
-import { useState } from "react";
-import "./App.css";
+import { useState } from 'react'
+import './App.css'
+
+// Ensuring other deps that import react are rewritting by plugin as well.
+import useLocalStorageState from 'use-local-storage-state'
 
 function App() {
-  const [count, setCount] = useState(0);
+  const [count, setCount] = useState(0)
+
+  const [todos] = useLocalStorageState('todos', {
+    defaultValue: ['buy avocado', 'do 50 push-ups'],
+  })
+
+  console.log('!todos', todos)
 
   return (
     <>
@@ -17,7 +26,7 @@ function App() {
         </p>
       </div>
     </>
-  );
+  )
 }
 
-export default App;
+export default App
