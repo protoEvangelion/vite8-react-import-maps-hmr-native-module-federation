@@ -9,6 +9,7 @@
     "dev": "bun run dev:host & bun run dev:remote",
     "dev:host": "bun --cwd host dev",
     "dev:remote": "bun --cwd remote dev",
+    "build": "bun run build:host && bun run build:remote",
     "build:host": "bun --cwd host build",
     "build:remote": "bun --cwd remote build",
     "preview:host": "bun --cwd host preview",
@@ -31,6 +32,7 @@
     "use-local-storage-state": "^19.5.0",
     "vite": "8.0.0-beta.4",
     "vite-plugin-external": "^6.2.2",
+    "vite-plugin-html": "^3.2.2",
     "vite-plugin-module-alias": "^1.3.5"
   },
   "dependencies": {
