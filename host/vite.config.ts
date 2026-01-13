@@ -4,17 +4,30 @@ import react from '@vitejs/plugin-react'
 import remoteProxyPlugin from '../vite-plugin-remote-proxy'
 
 const sharedModules = [
-  { name: 'react', entryAlias: 'react-entry', type: 'cjs' },
-  { name: 'react-dom', entryAlias: 'react-dom-entry', type: 'cjs' },
+  { name: 'react', entryAlias: 'react-entry' },
   {
     name: 'react-dom/client',
     entryAlias: 'react-dom-client-entry',
-    type: 'cjs',
   },
   {
     name: 'react/jsx-runtime',
     entryAlias: 'react-jsx-runtime-entry',
-    type: 'cjs',
+  },
+  // all react ones above are cjs
+  // this one is only a esm default export
+  {
+    name: 'react-confetti-boom',
+    entryAlias: 'react-confetti-boom-entry',
+  },
+  // this one has both esm named & default exports
+  {
+    name: 'lodash-es',
+    entryAlias: 'lodash-es-entry',
+  },
+  // this one has esm named exports only
+  {
+    name: 'nanoid',
+    entryAlias: 'nanoid-entry',
   },
 ]
 
@@ -31,7 +44,8 @@ export default defineConfig(({ command }) => {
 
   if (isBuild) {
     sharedModules.forEach((mod) => {
-      importMap.imports[mod.name] = `/assets/${mod.entryAlias}.js`
+      importMap.imports[mod.name] =
+        `/assets/${mod.entryAlias}.js?${Date.now().toString()}`
     })
   }
 

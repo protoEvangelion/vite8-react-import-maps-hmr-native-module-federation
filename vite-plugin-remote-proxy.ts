@@ -1,47 +1,22 @@
-import { createRequire } from 'module'
 import type { Plugin } from 'vite'
+import lsm from 'load-esm'
+const { loadEsm } = lsm
 
-const require = createRequire(import.meta.url)
+const moduleCache = new Map<string, Record<string, any>>()
 
 export interface ModuleOptions {
   name: string
-  type?: 'named' | 'cjs_interop'
   entryAlias?: string
-  [key: string]: any
 }
 
 export interface RemoteProxyPluginOptions {
   remoteUrl?: string
+  modules?: ModuleOptions[]
   /**
    * - `true`: Adds modules to optimizeDeps.include (for the Host app consuming the modules).
    * - `false` (default): Adds modules to optimizeDeps.exclude (for the Remote app serving the modules).
    */
   host?: boolean
-  modules?: (string | ModuleOptions)[]
-}
-
-interface NormalizedModuleConfig extends ModuleOptions {
-  type: 'named' | 'cjs_interop'
-}
-
-/*
- * Helper to extract named exports from a CJS module via Node.js require
- * This is critical because ESM Native Module Federation requires explicit named exports
- * to support destructuring (e.g., import { useState } from 'react') which default CJS->ESM
- * interop often misses.
- */
-function getNamedExports(moduleName: string): string[] {
-  try {
-    const pkg = require(moduleName)
-    const keys = Object.keys(pkg).filter((k) => k !== 'default')
-    console.log(
-      `[remote-proxy] Inspection for ${moduleName} found ${keys.length} keys`
-    )
-    return keys
-  } catch (e) {
-    console.warn(`[remote-proxy] Could not inspect ${moduleName}. Error:`, e)
-    return []
-  }
 }
 
 export default function remoteProxyPlugin({
@@ -49,22 +24,20 @@ export default function remoteProxyPlugin({
   host = false,
   modules = [],
 }: RemoteProxyPluginOptions): Plugin {
-  // Normalize the input list into a map for easy lookup
-  const moduleConfig = new Map<string, NormalizedModuleConfig>()
-  let isBuild = false
-
-  // Maintain a simple list of names for optimizeDeps
+  const moduleConfig = new Map<string, ModuleOptions>()
   const moduleNames: string[] = []
 
   modules.forEach((m) => {
-    if (typeof m === 'string') {
-      moduleConfig.set(m, { name: m, type: 'cjs_interop' })
-      moduleNames.push(m)
-    } else {
-      moduleConfig.set(m.name, { type: 'named', ...m })
-      moduleNames.push(m.name)
-    }
+    const name = typeof m === 'string' ? m : m.name
+
+    moduleConfig.set(name, {
+      name,
+    })
+
+    moduleNames.push(name)
   })
+
+  let isBuild = false
 
   return {
     name: 'vite-plugin-remote-proxy',
@@ -72,26 +45,21 @@ export default function remoteProxyPlugin({
 
     config(config, { command }) {
       isBuild = command === 'build'
-      /*
-       * --- PRODUCTION BUILD STRATEGY (Host Only) ---
-       * In production, we need to generate physical bundles for shared dependencies
-       * so the Remote app can consume them.
-       * We inject "virtual entries" into the bundler input options so we don't need to add them manually.
-       * E.g. 'react-entry' -> 'virtual:entry-react'
-       */
-      if (host && isBuild) {
-        const input: Record<string, string> = {}
-        modules.forEach((m) => {
-          const name = typeof m === 'string' ? m : m.name
-          // Generate a filename-friendly alias (e.g. 'react-dom/client' -> 'react-dom-client-entry')
-          const alias =
-            typeof m === 'object' && m.entryAlias
-              ? m.entryAlias
-              : `${name.replace(/\//g, '-')}-entry`
 
-          // Map to a virtual ID that we will intercept in load()
-          input[alias] = `virtual:entry-${name}`
+      if (host && isBuild) {
+        /*
+         * --- PRODUCTION BUILD STRATEGY (Host Only) ---
+         * In production, we need to generate physical bundles for shared dependencies so the Remote app can consume them.
+         * We inject "virtual entries" into the bundler input options so plugin user does not need to add them manually.
+         * E.g. 'react-entry' -> 'virtual:entry-react'
+         */
+        const input: Record<string, string> = {}
+
+        moduleConfig.forEach((m) => {
+          const alias = m.entryAlias || `${m.name.replace(/\//g, '-')}-entry`
+          input[alias] = `virtual:entry-${m.name}`
         })
+
         return {
           build: {
             rolldownOptions: {
@@ -105,7 +73,7 @@ export default function remoteProxyPlugin({
        * --- DEVELOPMENT STRATEGY ---
        * In Dev, we rely on Vite's pre-bundling.
        * Host: force inclusion in optimizeDeps so they are pre-bundled and addressable.
-       * Remote: force exclusion so it doesn't try to bundle what it should legally import from Host/CDN.
+       * Remote: force exclusion so it doesn't try to bundle what it should legally import from Host.
        */
       if (moduleNames.length === 0) return
 
@@ -138,54 +106,64 @@ export default function remoteProxyPlugin({
       }
     },
 
-    load(id) {
-      /*
-       * 1. Build Entry Generation (Host Production)
-       * Generates a proper ESM facade from the local installation.
-       * Output: "export { useState } from 'react'; export default React;"
-       * Purpose: Creates a bundle that *actually* exports named members, complying with ESM specs.
-       */
-      if (host && isBuild && id.startsWith('virtual:entry-')) {
-        const moduleName = id.replace('virtual:entry-', '')
-        const keys = getNamedExports(moduleName)
-
-        return `
-          export { ${keys.join(', ')} } from '${moduleName}';
-          import { default as Mod } from '${moduleName}';
-          export default Mod;
-        `
+    async load(id) {
+      if (
+        !id.startsWith('virtual:entry-') &&
+        !id.startsWith('\0virtual:remote-proxy:')
+      ) {
+        return
       }
 
-      /*
-       * 2. Dev Proxy Generation (Host/Remote Dev)
-       * Generates a proxy to the pre-bundled/served file URL.
-       * Output: "import R from 'http://...'; export const { useState } = R;"
-       * Purpose: Bridges the gap where Import Maps might be missing or limited in Dev,
-       * and unpacks the Default export (which Vite serves) back into Named exports.
-       */
-      if (id.startsWith('\0virtual:remote-proxy:')) {
-        const moduleName = id.split(':')[2]
-        const config = moduleConfig.get(moduleName)
+      const moduleName =
+        host && isBuild && id.startsWith('virtual:entry-')
+          ? id.replace('virtual:entry-', '')
+          : id.split(':')[2]
 
-        if (!config) return
+      const config = moduleConfig.get(moduleName)
 
-        const remoteFilename = moduleName.replace(/\//g, '_') + '.js'
-        const remotePath = `${remoteUrl}/${remoteFilename}`
+      if (!config) return
 
-        if (config.type === 'named') {
-          return `
-            export * from "${remotePath}";
-          `
+      if (!moduleCache.has(moduleName)) {
+        moduleCache.set(moduleName, await loadEsm(moduleName))
+      }
+
+      const moduleExports = moduleCache.get(moduleName) ?? {}
+      const remoteFilename = moduleName.replace(/\//g, '_') + '.js'
+      const modulePath =
+        host && isBuild ? moduleName : `${remoteUrl}/${remoteFilename}`
+
+      const defaultExport = moduleExports.default
+        ? `
+import RemoteModule from "${modulePath}";
+export default RemoteModule;
+      `
+        : ''
+
+      const keysToExport = Object.keys(moduleExports)
+        .filter((x) => x !== 'default')
+        .join(', ')
+
+      const namedExportString = moduleExports.default
+        ? `export const { ${keysToExport} } = RemoteModule`
+        : `export * from '${modulePath}'`
+
+      const exportShimString = `/** VITE PLUGIN ESM EXPORT SHIM */
+${defaultExport}
+${namedExportString};`
+
+      return exportShimString
+    },
+
+    /** Mimic production caching to ensure shared modules fetch the latest */
+    configurePreviewServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url?.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg)$/)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+        } else if (!req.url || req.url === '/' || req.url.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
         }
-
-        const namedExports = getNamedExports(moduleName)
-
-        return `
-          import RemoteModule from "${remotePath}";
-          export default RemoteModule;
-          export const { ${namedExports.join(', ')} } = RemoteModule;
-        `
-      }
+        next()
+      })
     },
   }
 }
