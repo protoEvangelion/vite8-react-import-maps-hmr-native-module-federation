@@ -1,6 +1,4 @@
 import type { Plugin } from 'vite'
-import lsm from 'load-esm'
-const { loadEsm } = lsm
 
 const moduleCache = new Map<string, Record<string, any>>()
 
@@ -142,7 +140,7 @@ export default function remoteProxyPlugin({
       if (!config) return
 
       if (!moduleCache.has(moduleName)) {
-        moduleCache.set(moduleName, await loadEsm(moduleName))
+        moduleCache.set(moduleName, await import(moduleName))
       }
 
       const moduleExports = moduleCache.get(moduleName) ?? {}
