@@ -25,7 +25,7 @@ function App() {
         nanoid demo shared npm esm only named exports `nanoid()`: {nanoid()}
       </p>
       <div>
-        <p>react demo shared npm cjs export `useState`: {nanoid()}</p>
+        <p>react demo shared npm cjs export `useState`</p>
         <button onClick={() => setCount((count) => count + 1)}>
           count is {count}
         </button>

@@ -21,38 +21,24 @@ export default defineConfig(({ command }) => {
         formats: ['es'], // Only build ES module format
         fileName: 'App',
       },
-      rolldownOptions: {
-        external: ['react', 'react-dom', 'react/jsx-runtime'],
-      },
     },
     plugins: [
       react({ reactRefreshHost: 'http://localhost:3000' }),
 
-      !isBuild &&
-        remoteProxyPlugin({
-          host: false,
-          remoteUrl: isBuild
-            ? 'http://localhost:3000'
-            : 'http://localhost:3000/node_modules/.vite/deps',
-          modules: [
-            { name: 'react' },
-            {
-              name: 'react-dom/client',
-            },
-            {
-              name: 'react/jsx-runtime',
-            },
-            {
-              name: 'react-confetti-boom',
-            },
-            {
-              name: 'lodash-es',
-            },
-            {
-              name: 'nanoid',
-            },
-          ],
-        }),
+      remoteProxyPlugin({
+        host: false,
+        remoteUrl: isBuild
+          ? 'http://localhost:3000'
+          : 'http://localhost:3000/node_modules/.vite/deps',
+        sharedNpmDeps: [
+          'react',
+          'react-dom/client',
+          'react/jsx-runtime',
+          'react-confetti-boom',
+          'lodash-es',
+          'nanoid',
+        ],
+      }),
     ],
   }
 })

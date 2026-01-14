@@ -4,14 +4,10 @@ const { loadEsm } = lsm
 
 const moduleCache = new Map<string, Record<string, any>>()
 
-export interface ModuleOptions {
-  name: string
-  entryAlias?: string
-}
-
 export interface RemoteProxyPluginOptions {
   remoteUrl?: string
-  modules?: ModuleOptions[]
+  sharedNpmDeps?: string[]
+  importMap?: { imports: Record<string, string> }
   /**
    * - `true`: Adds modules to optimizeDeps.include (for the Host app consuming the modules).
    * - `false` (default): Adds modules to optimizeDeps.exclude (for the Remote app serving the modules).
@@ -22,19 +18,18 @@ export interface RemoteProxyPluginOptions {
 export default function remoteProxyPlugin({
   remoteUrl,
   host = false,
-  modules = [],
+  sharedNpmDeps = [],
+  importMap = { imports: {} },
 }: RemoteProxyPluginOptions): Plugin {
-  const moduleConfig = new Map<string, ModuleOptions>()
-  const moduleNames: string[] = []
+  const moduleConfig = new Map<string, { name: string; entryAlias: string }>()
 
-  modules.forEach((m) => {
-    const name = typeof m === 'string' ? m : m.name
+  sharedNpmDeps.forEach((name) => {
+    const entryAlias = `${name.replaceAll('/', '-')}-entry`
 
     moduleConfig.set(name, {
       name,
+      entryAlias,
     })
-
-    moduleNames.push(name)
   })
 
   let isBuild = false
@@ -53,17 +48,38 @@ export default function remoteProxyPlugin({
          * We inject "virtual entries" into the bundler input options so plugin user does not need to add them manually.
          * E.g. 'react-entry' -> 'virtual:entry-react'
          */
-        const input: Record<string, string> = {}
+        const moduleInputs = Object.fromEntries(
+          Array.from(moduleConfig.values()).map((m) => [
+            m.entryAlias,
+            `virtual:entry-${m.name}`,
+          ])
+        )
 
-        moduleConfig.forEach((m) => {
-          const alias = m.entryAlias || `${m.name.replace(/\//g, '-')}-entry`
-          input[alias] = `virtual:entry-${m.name}`
-        })
+        const existingInput = (config.build as any)?.rolldownOptions?.input
+        const userInputs = existingInput ? existingInput : {}
 
         return {
           build: {
             rolldownOptions: {
-              input,
+              // Fixes esm modules with only named exports
+              preserveEntrySignatures: 'strict',
+              input: {
+                ...moduleInputs,
+                ...userInputs,
+              },
+              // We need entry proxies to npm modules to not include a hash because we have no way of grabbing that during index.hml import map injection phase
+              output: {
+                chunkFileNames: 'assets/[name]-[hash].js',
+                entryFileNames: 'assets/[name].js',
+              },
+            },
+          },
+        }
+      } else if (!host && isBuild) {
+        return {
+          build: {
+            rolldownOptions: {
+              external: sharedNpmDeps,
             },
           },
         }
@@ -75,11 +91,11 @@ export default function remoteProxyPlugin({
        * Host: force inclusion in optimizeDeps so they are pre-bundled and addressable.
        * Remote: force exclusion so it doesn't try to bundle what it should legally import from Host.
        */
-      if (moduleNames.length === 0) return
+      if (sharedNpmDeps.length === 0) return
 
       return {
         optimizeDeps: {
-          [host ? 'include' : 'exclude']: moduleNames,
+          [host ? 'include' : 'exclude']: sharedNpmDeps,
         },
       }
     },
@@ -91,8 +107,10 @@ export default function remoteProxyPlugin({
        */
       if (host && isBuild) {
         if (source.startsWith('virtual:entry-')) {
+          // Return source to tell vite that this file exists & will be handled during load phase
           return source
         }
+        // Returns null to let default vite resolution handle everything else
         return null
       }
 
@@ -133,10 +151,7 @@ export default function remoteProxyPlugin({
         host && isBuild ? moduleName : `${remoteUrl}/${remoteFilename}`
 
       const defaultExport = moduleExports.default
-        ? `
-import RemoteModule from "${modulePath}";
-export default RemoteModule;
-      `
+        ? `import RemoteModule from "${modulePath}"; export default RemoteModule;`
         : ''
 
       const keysToExport = Object.keys(moduleExports)
@@ -154,12 +169,48 @@ ${namedExportString};`
       return exportShimString
     },
 
+    /**
+     * Injects import map into index.html for host only
+     * Note that we cannot inject npm deps into import map for dev because it is currently
+     * impossible to get vite dev server not to change npm module imports.
+     * E.G. vite dev converts:
+     *  `import React from 'react'`
+     *  `import __vite__cjsImport0_react from '/node_modules/.vite/deps/react.js?v=a2584c15'`
+     * However in production we can use build.externals to tell vite "hands off" my npm imports
+     */
+    transformIndexHtml(html) {
+      const buildImports =
+        host && isBuild
+          ? Object.fromEntries(
+              Array.from(moduleConfig.values()).map(({ name, entryAlias }) => [
+                name,
+                `/assets/${entryAlias}.js?t=${Date.now()}`,
+              ])
+            )
+          : {}
+
+      const finalImportMap = {
+        ...importMap,
+        imports: {
+          ...importMap?.imports,
+          ...buildImports,
+        },
+      }
+
+      return html.replace('<%- importMap %>', JSON.stringify(finalImportMap))
+    },
+
     /** Mimic production caching to ensure shared modules fetch the latest */
     configurePreviewServer(server) {
       server.middlewares.use((req, res, next) => {
-        if (req.url?.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg)$/)) {
+        const cleanUrl = req.url?.split('?')[0]
+        if (cleanUrl?.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg)$/)) {
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
-        } else if (!req.url || req.url === '/' || req.url.endsWith('.html')) {
+        } else if (
+          !cleanUrl ||
+          cleanUrl === '/' ||
+          cleanUrl.endsWith('.html')
+        ) {
           res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
         }
         next()
